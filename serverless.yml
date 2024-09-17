@@ -1,0 +1,76 @@
+service: eb-sqs-demo
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: dev
+  region: us-east-1
+  iam:
+   role:
+    statements:
+     - Effect: Allow
+       Action: events:PutEvents
+       Resource: !GetAtt eventBus.Arn
+
+# Serverless Framework automatically creates an API Gateway resource named ApiGatewayRestApi      
+# This service allows the api gateway to forward messages directly to eventbridge
+custom:
+  apiGatewayServiceProxies:
+    - eventbridge:  
+        path: /eventbridge
+        method: post
+        source: 'fuel-app'
+        detailType: 'user-signup'
+        eventBusName: { Ref: 'eventBus' }
+        cors: true
+        authorizationType: 'CUSTOM'
+        authorizerId: { Ref: 'AuthorizerApiGatewayAuthorizer' }
+          
+functions:
+# lambda authorizer function
+  authorizer:
+    handler: functions/authorizer.handler
+    environment:
+      COGNITO_USERPOOL_ID: !Ref cognitoUserPool
+      COGNITO_WEB_CLIENT_ID: !Ref cognitoUserPoolWebclient
+
+#lambda function which forwards messages to eventbridge
+  putEventsLambda:  
+    handler: functions/putEvents.handler
+    environment:
+     EventBusName: !Ref eventBus
+     AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+    events:
+      - http:
+          path: /generate
+          method: post
+          authorizer: authorizer
+
+# Lambda fuction to pull and process messages from the queue
+  processEventsLambda:
+    handler: functions/processEvents.handler
+    environment:
+      NOTES_TABLE_NAME: !Ref notesTable
+      AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: !GetAtt notesTable.Arn
+    events:
+      - sqs: 
+          arn: !GetAtt targetSQS.Arn
+          batchSize: 10
+          functionResponseType: "ReportBatchItemFailures"
+
+# you can add CloudFormation resource templates here
+resources:
+ Resources: ${file(resources.yml)}  
+ Outputs:
+    EventBusName:
+      Value: !Ref eventBus
+
+plugins:
+  - serverless-apigateway-service-proxy
+  - serverless-iam-roles-per-function

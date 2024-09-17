@@ -1,0 +1,101 @@
+#Dynamodb table for our notes
+notesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: notes-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: notesId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: notesId
+            KeyType: HASH
+
+eventBus:
+  Type: AWS::Events::EventBus
+  Properties:
+    Name: QR_EVENT_BUS
+  
+targetSQS:
+  Type: AWS::SQS::Queue
+  Properties:
+    QueueName: QR_MESSAGE_QUEUE
+    RedrivePolicy:
+     deadLetterTargetArn: !GetAtt targetDLQ.Arn
+     maxReceiveCount: 1
+
+targetDLQ:
+  Type: AWS::SQS::Queue
+  Properties:
+    QueueName: QR_MESSAGE_DLQ
+
+forwardingrule:
+  Type: AWS::Events::Rule
+  Properties:
+    EventBusName: !GetAtt eventBus.Arn
+    EventPattern:
+     source:
+      - "fuel-app"
+     detail-type:
+      - "user-signup"
+    Targets:
+     - Arn: !GetAtt targetSQS.Arn
+       Id: "qr-event-bus-target-${sls:stage}"
+
+targetSQSPolicy:
+  Type: AWS::SQS::QueuePolicy
+  Properties:
+    Queues:
+     - !Ref targetSQS
+    PolicyDocument:
+     Statement:
+      - Effect: "Allow"
+        Action:
+         - "SQS:SendMessage"
+        Resource: !GetAtt targetSQS.Arn
+        Principal:
+         Service: events.amazonaws.com
+
+# Cognito user pool
+cognitoUserPool:
+  Type: AWS::Cognito::UserPool
+  Properties:
+    UserPoolName: MyNotesUP-${self:provider.stage}
+
+# User pool web client
+cognitoUserPoolWebclient:
+  Type: AWS::Cognito::UserPoolClient
+  Properties:
+    UserPoolId: !Ref cognitoUserPool
+    ClientName: web
+    AllowedOAuthFlowsUserPoolClient: true
+    SupportedIdentityProviders:
+      - COGNITO
+    AllowedOAuthScopes:
+      - phone
+      - email
+      - profile
+      - openid
+    AllowedOAuthFlows:
+      - implicit
+    CallbackURLs:
+      - http://localhost:3000
+
+# User pool domain
+cognitoUserPoolDomain:
+  Type: AWS::Cognito::UserPoolDomain
+  Properties:
+    UserPoolId: !Ref cognitoUserPool
+    Domain: mynectzy-${self:provider.stage}
+
+AuthorizerApiGatewayAuthorizer:
+  Type: AWS::ApiGateway::Authorizer
+  Properties:
+    AuthorizerResultTtlInSeconds: 300
+    AuthorizerUri: arn:aws:apigateway:${self:provider.region}:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:058264198774:function:eb-sqs-demo-dev-authorizer/invocations
+    IdentitySource: method.request.header.Authorization
+    Name: customAuthorizer
+    RestApiId: { Ref: 'ApiGatewayRestApi' }
+    Type: TOKEN
+
+    # Serverless Framework automatically creates an API Gateway resource named ApiGatewayRestApi
